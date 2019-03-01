@@ -237,7 +237,7 @@ func (dv *DevtoolsConn) NewSession(link string) (*Session, error) {
 		return nil, errors.New("Can not create browser context")
 	}
 
-	body, err := sjson.Set(`{"method":"Target.createTarget","params":{"url":"","browserContextId":"`+bcID.String()+`"}}`, "url", link)
+	body, err := sjson.Set(`{"method":"Target.createTarget","params":{"url":"","browserContextId":"`+bcID.String()+`"}}`, "params.url", link)
 	if err != nil {
 		return nil, err
 	}
