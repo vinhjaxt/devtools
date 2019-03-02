@@ -602,7 +602,7 @@ func (s *Session) GetResponseBody(requestID string) (body string, isBase64 bool,
 	return
 }
 
-// WaitRequest wait for a request by match function and init by init function, return request success or failed, request id or error
+// WaitRequest wait for a request by match function and init by init function, return request success or failed, request id or error, url: params.request.url
 func (s *Session) WaitRequest(match func(req *gjson.Result) bool, init func() error) (bool, string, error) {
 	success := make(chan bool)
 	errChan := make(chan error)
