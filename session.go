@@ -424,7 +424,6 @@ func (s *Session) ClearBrowserCookies() error {
 
 // WaitReady wait for selector exist
 func (s *Session) WaitReady(sel string) error {
-	s.WaitLoading(5 * time.Second)
 	json, err := s.ExecJsPromise(`
 	(async () => {
 		return (await new Promise((resolve, reject) => {
@@ -456,7 +455,6 @@ func (s *Session) WaitReady(sel string) error {
 
 // WaitHidden wait for selector hidden or not exist
 func (s *Session) WaitHidden(sel string) error {
-	s.WaitLoading(5 * time.Second)
 	json, err := s.ExecJsPromise(`
 	(async () => {
 		return (await new Promise((resolve, reject) => {
@@ -488,7 +486,6 @@ func (s *Session) WaitHidden(sel string) error {
 
 // WaitShow wait for selector exist and not hidden
 func (s *Session) WaitShow(sel string) error {
-	s.WaitLoading(5 * time.Second)
 	json, err := s.ExecJsPromise(`
 	(async () => {
 		return (await new Promise((resolve, reject) => {
@@ -544,7 +541,6 @@ func (s *Session) SetAttributeDirect(sel, key string, val interface{}) error {
 
 // Exist check if selector exist
 func (s *Session) Exist(sel string) (bool, error) {
-	s.WaitLoading(5 * time.Second)
 	json, err := s.ExecJs(`document.querySelector(` + jsonEncode(sel) + `)`)
 	if err != nil {
 		return false, err

@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"./"
+	devtools "./"
 )
 
 func TestDemo(t *testing.T) {
@@ -21,9 +21,8 @@ func TestDemo(t *testing.T) {
 	log.Println("TargetID", ss.TargetID)
 
 	ss.WaitNavigate("http://google.com")
-	ss.Loading.Wait()
-	ss.Loading.Wait()
-	ss.Loading.Wait()
+	// You can execJS or wait for some front-end here
+	ss.ExecJs(`1`)
 	log.Println("Done")
 	os.Exit(0)
 }
