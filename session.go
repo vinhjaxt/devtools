@@ -33,6 +33,7 @@ type Session struct {
 	Meta       *SessionMeta
 	OnNavigate func(url string)
 	Loading    *sync.WaitGroup
+	Navigating int32
 }
 
 // OpenSession open session by targetId (tabId)
@@ -62,6 +63,7 @@ func (dv *DevtoolsConn) OpenSession(targetID string) (*Session, error) {
 		feCount:    0,
 		Meta:       &SessionMeta{},
 		Loading:    &sync.WaitGroup{},
+		Navigating: 0,
 	}
 
 	for _, initCmd := range []string{`{"method":"Page.enable"}`, `{"method":"Network.enable"}`, `{"method":"Target.setAutoAttach","params":{"autoAttach":true,"waitForDebuggerOnStart":true}}` /*, `{"method":"Target.setDiscoverTargets","params":{"discover":true}}`*/} {
@@ -126,14 +128,15 @@ func (s *Session) processEvent(json *gjson.Result) {
 		case "Page.frameStartedLoading":
 			if json.Get("params.frameId").String() == s.TargetID {
 				s.Loading.Add(1)
+				atomic.StoreInt32(&s.Navigating, 1)
 			}
 		case "Page.frameStoppedLoading":
 			if json.Get("params.frameId").String() == s.TargetID {
 				s.Loading.Add(-1)
+				atomic.StoreInt32(&s.Navigating, 0)
 			}
 		case "Target.targetInfoChanged":
 			if json.Get("params.targetInfo.targetId").String() == s.TargetID {
-				// s.IsLoading.Store(true)
 				url := json.Get("params.targetInfo.url").String()
 				if url != s.Meta.Url {
 					s.Meta.Url = url
@@ -143,28 +146,30 @@ func (s *Session) processEvent(json *gjson.Result) {
 				}
 			}
 		case "Page.loadEventFired", "Page.domContentEventFired":
-			// s.IsLoading.Store(false)
 		case "Page.navigatedWithinDocument":
-			// s.IsLoading.Store(false)
-			url := json.Get("params.url").String()
-			if url != s.Meta.Url {
-				s.Meta.Url = url
-				if s.OnNavigate != nil {
-					s.OnNavigate(s.Meta.Url)
+			if json.Get("params.frameId").String() == s.TargetID {
+				url := json.Get("params.url").String()
+				if url != s.Meta.Url {
+					s.Meta.Url = url
+					if s.OnNavigate != nil {
+						s.OnNavigate(s.Meta.Url)
+					}
 				}
 			}
 		case "Page.frameScheduledNavigation":
-			// s.IsLoading.Store(true)
-			url := json.Get("params.url").String()
-			if url != s.Meta.Url {
-				s.Meta.Url = url
-				if s.OnNavigate != nil {
-					s.OnNavigate(s.Meta.Url)
+			if json.Get("params.frameId").String() == s.TargetID {
+				atomic.StoreInt32(&s.Navigating, 1)
+				url := json.Get("params.url").String()
+				if url != s.Meta.Url {
+					s.Meta.Url = url
+					if s.OnNavigate != nil {
+						s.OnNavigate(s.Meta.Url)
+					}
 				}
 			}
 		case "Page.frameNavigated":
-			if json.Get("params.frame.parentId").Exists() == false {
-				// s.IsLoading.Store(false)
+			if json.Get("params.frame.id").String() == s.TargetID {
+				atomic.StoreInt32(&s.Navigating, 0)
 				url := json.Get("params.frame.url").String()
 				if url != s.Meta.Url {
 					s.Meta.Url = url
@@ -180,8 +185,8 @@ func (s *Session) processEvent(json *gjson.Result) {
 // WaitCommand by a function with timeout
 func (s *Session) WaitCommand(cmd string, fn func(sentID uint64, body *gjson.Result, successSig chan struct{}), timeout time.Duration) error {
 	var sentID uint64
-	successSig := make(chan struct{})
-	errSig := make(chan error)
+	successSig := make(chan struct{}, 1)
+	errSig := make(chan error, 1)
 	defer s.DelEvent(s.AddEvent(func(body *gjson.Result, err error) {
 		if err != nil {
 			errSig <- err
@@ -210,8 +215,8 @@ func (s *Session) WaitCommand(cmd string, fn func(sentID uint64, body *gjson.Res
 
 // Navigate to link dont wait complete
 func (s *Session) Navigate(link string) error {
-	success := make(chan struct{})
-	errSig := make(chan error)
+	success := make(chan struct{}, 1)
+	errSig := make(chan error, 1)
 	defer s.DelEvent(s.AddEvent(func(body *gjson.Result, err error) {
 		if err != nil {
 			errSig <- err
@@ -239,31 +244,11 @@ func (s *Session) Navigate(link string) error {
 
 // WaitNavigate to link dont wait complete
 func (s *Session) WaitNavigate(link string) error {
-	success := make(chan struct{})
-	errSig := make(chan error)
-	defer s.DelEvent(s.AddEvent(func(body *gjson.Result, err error) {
-		if err != nil {
-			errSig <- err
-			return
-		}
-		if body.Get("method").String() == "Page.frameNavigated" && body.Get("params.frame.id").String() == s.TargetID {
-			success <- struct{}{}
-		}
-	}))
-	go func() {
-		err := s.WriteCommand(`{"method":"Page.navigate","params":{"url":` + jsonEncode(link) + `}}`)
-		if err != nil {
-			errSig <- err
-		}
-	}()
-	select {
-	case err := <-errSig:
+	err := s.Navigate(link)
+	if err != nil {
 		return err
-	case <-success:
-		return nil
-	case <-time.After(15 * time.Second):
-		return errors.New("Timeout navigate to: " + link)
 	}
+	return s.WaitNavigating(15 * time.Second)
 }
 
 // WaitNavigateComplete to a url
@@ -305,8 +290,8 @@ func (s *Session) SendCommand(json string) (*gjson.Result, error) {
 		return nil, err
 	}
 
-	success := make(chan *gjson.Result)
-	errSig := make(chan error)
+	success := make(chan *gjson.Result, 1)
+	errSig := make(chan error, 1)
 	defer s.DelEvent(s.AddEvent(func(body *gjson.Result, err error) {
 		if err != nil {
 			errSig <- err
@@ -339,7 +324,7 @@ func (s *Session) SendCommand(json string) (*gjson.Result, error) {
 
 // WaitLoading for complete
 func (s *Session) WaitLoading(timeout time.Duration) error {
-	success := make(chan struct{})
+	success := make(chan struct{}, 1)
 	go func() {
 		s.Loading.Wait()
 		success <- struct{}{}
@@ -349,6 +334,23 @@ func (s *Session) WaitLoading(timeout time.Duration) error {
 		return nil
 	case <-time.After(timeout):
 		return errors.New("WaitLoading Timeout")
+	}
+}
+
+// WaitNavigating for ready
+func (s *Session) WaitNavigating(timeout time.Duration) error {
+	success := make(chan struct{}, 1)
+	go func() {
+		for atomic.LoadInt32(&s.Navigating) == 1 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		success <- struct{}{}
+	}()
+	select {
+	case <-success:
+		return nil
+	case <-time.After(timeout):
+		return errors.New("WaitNavigating Timeout")
 	}
 }
 
@@ -604,8 +606,8 @@ func (s *Session) GetResponseBody(requestID string) (body string, isBase64 bool,
 
 // WaitRequest wait for a request by match function and init by init function, return request success or failed, request id or error, url: params.request.url
 func (s *Session) WaitRequest(match func(req *gjson.Result) bool, init func() error) (bool, string, error) {
-	success := make(chan bool)
-	errChan := make(chan error)
+	success := make(chan bool, 1)
+	errChan := make(chan error, 1)
 
 	requestID := ""
 

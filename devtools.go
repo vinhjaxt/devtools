@@ -156,7 +156,7 @@ func (dv *DevtoolsConn) SendCommand(json string) (*gjson.Result, error) {
 		return nil, err
 	}
 
-	success := make(chan *gjson.Result) // It's OK to leave this chan open. GC'll collect it
+	success := make(chan *gjson.Result, 1) // It's OK to leave this chan open. GC'll collect it
 	defer dv.delEvent(dv.addEvent(func(body *gjson.Result, err error) {
 		if body.Get("id").Uint() == sentID {
 			success <- body
