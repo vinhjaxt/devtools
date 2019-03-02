@@ -237,8 +237,37 @@ func (s *Session) Navigate(link string) error {
 	}
 }
 
-// WaitNavigate to a url
+// WaitNavigate to link dont wait complete
 func (s *Session) WaitNavigate(link string) error {
+	success := make(chan struct{})
+	errSig := make(chan error)
+	defer s.DelEvent(s.AddEvent(func(body *gjson.Result, err error) {
+		if err != nil {
+			errSig <- err
+			return
+		}
+		if body.Get("method").String() == "Page.frameNavigated" && body.Get("params.frame.id").String() == s.TargetID {
+			success <- struct{}{}
+		}
+	}))
+	go func() {
+		err := s.WriteCommand(`{"method":"Page.navigate","params":{"url":` + jsonEncode(link) + `}}`)
+		if err != nil {
+			errSig <- err
+		}
+	}()
+	select {
+	case err := <-errSig:
+		return err
+	case <-success:
+		return nil
+	case <-time.After(15 * time.Second):
+		return errors.New("Timeout navigate to: " + link)
+	}
+}
+
+// WaitNavigateComplete to a url
+func (s *Session) WaitNavigateComplete(link string) error {
 	err := s.Navigate(link)
 	if err != nil {
 		return err
