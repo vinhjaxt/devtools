@@ -87,13 +87,13 @@ func NewDevtools(url string) (*DevtoolsConn, error) {
 	go func() {
 		for {
 			_, body, err := c.ReadMessage()
-			json := gjson.ParseBytes(body)
-			go dv.broadcastDevtools(&json, err)
 			if err != nil {
 				isClosed.Store(true)
 				c.Close()
 				break
 			}
+			json := gjson.ParseBytes(body)
+			go dv.broadcastDevtools(&json, err)
 		}
 	}()
 

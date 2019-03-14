@@ -76,13 +76,13 @@ func (dv *DevtoolsConn) OpenSession(targetID string) (*Session, error) {
 	go func() {
 		for {
 			_, body, err := c.ReadMessage()
-			json := gjson.ParseBytes(body)
-			go s.broadcastTarget(&json, err)
 			if err != nil {
 				isClosed.Store(true)
 				c.Close()
 				break
 			}
+			json := gjson.ParseBytes(body)
+			go s.broadcastTarget(&json, err)
 			go s.processEvent(&json)
 		}
 	}()
