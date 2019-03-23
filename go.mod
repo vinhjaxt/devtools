@@ -1,4 +1,4 @@
-module devtools
+module github.com/vinhjaxt/devtools
 
 go 1.12
 
