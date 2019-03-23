@@ -1,15 +1,13 @@
-package devtools_test
+package devtools
 
 import (
 	"log"
 	"os"
 	"testing"
-
-	devtools "./"
 )
 
 func TestDemo(t *testing.T) {
-	dv, err := devtools.NewDevtools("http://localhost:9222")
+	dv, err := NewDevtools("http://localhost:9222")
 	if err != nil {
 		log.Panicln(err)
 	}
