@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"testing"
+
+	"github.com/tidwall/sjson"
 )
 
 func TestDemo(t *testing.T) {
@@ -17,6 +19,12 @@ func TestDemo(t *testing.T) {
 		log.Panicln(err)
 	}
 	log.Println("TargetID", ss.TargetID)
+
+	sjson.Set(`{"method":"Page.addScriptToEvaluateOnNewDocument","params":{"source":""}}`, "params.source", `
+	window.alert = function alert(){
+		// prevent
+	}
+	`)
 
 	ss.WaitNavigate("http://google.com")
 	// You can execJS or wait for some front-end here
