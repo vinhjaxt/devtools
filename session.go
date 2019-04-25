@@ -21,19 +21,21 @@ type SessionMeta struct {
 
 // Session hold tab connection
 type Session struct {
-	nextSendID uint64
-	Dv         *DevtoolsConn
-	TargetID   string
-	Conn       *websocket.Conn
-	ConnMu     *sync.Mutex
-	IsClosed   *atomic.Value
-	fEvents    map[uint32]func(*gjson.Result, error)
-	feMu       *sync.RWMutex
-	feCount    uint32
-	Meta       *SessionMeta
-	OnNavigate func(url string)
-	Loading    *sync.WaitGroup
-	Navigating int32
+	nextSendID   uint64
+	Dv           *DevtoolsConn
+	TargetID     string
+	Conn         *websocket.Conn
+	ConnMu       *sync.Mutex
+	IsClosed     *atomic.Value
+	fEvents      map[uint32]func(*gjson.Result, error)
+	feMu         *sync.RWMutex
+	feCount      uint32
+	Meta         *SessionMeta
+	OnNavigate   func(url string)
+	Loading      *sync.WaitGroup
+	Navigating   int32
+	IsJSCxtReady int32
+	ExecCxtID    int32
 }
 
 // OpenSession open session by targetId (tabId)
@@ -66,7 +68,7 @@ func (dv *DevtoolsConn) OpenSession(targetID string) (*Session, error) {
 		Navigating: 0,
 	}
 
-	for _, initCmd := range []string{`{"method":"Page.enable"}`, `{"method":"Network.enable"}`, `{"method":"Target.setAutoAttach","params":{"autoAttach":true,"waitForDebuggerOnStart":true}}` /*, `{"method":"Target.setDiscoverTargets","params":{"discover":true}}`*/} {
+	for _, initCmd := range []string{`{"method":"Page.enable"}`, `{"method":"Network.enable"}`, `{"method":"Target.enable"}`, `{"method":"Runtime.enable"}`, `{method":"Target.setAutoAttach","params":{"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}}`, `{"method":"Target.setDiscoverTargets","params":{"discover":true}}`} {
 		err = s.WriteCommand(initCmd)
 		if err != nil {
 			return nil, err
@@ -125,6 +127,25 @@ func (s *Session) processEvent(json *gjson.Result) {
 	// log.Println(json.Raw)
 	if method != "" {
 		switch method {
+		case "Runtime.executionContextCreated":
+			if json.Get("params.context.auxData.frameId").String() == s.TargetID && json.Get("params.context.auxData.isDefault").Bool() {
+				// isDefault false => extension context
+				// log.Println("JS Ctx created")
+				atomic.StoreInt32(&s.IsJSCxtReady, 1)
+				atomic.StoreInt32(&s.ExecCxtID, int32(json.Get("params.context.id").Int()))
+			}
+		case "Runtime.executionContextsCleared":
+			// log.Println("JS Ctx Cleared")
+			atomic.StoreInt32(&s.IsJSCxtReady, 0)
+		case "Runtime.executionContextDestroyed":
+			if int32(json.Get("params.executionContextId").Int()) == atomic.LoadInt32(&s.ExecCxtID) {
+				// log.Println("JS Ctx Destroyed")
+				atomic.StoreInt32(&s.IsJSCxtReady, 0)
+			}
+			// frameId
+		case "Target.targetCreated":
+			// new tab opened
+			// body.Get("params.targetInfo.openerId").String() == s.TargetID => open by this tab
 		case "Page.frameStartedLoading":
 			if json.Get("params.frameId").String() == s.TargetID {
 				s.Loading.Add(1)
@@ -337,11 +358,14 @@ func (s *Session) WaitLoading(timeout time.Duration) error {
 	}
 }
 
-// WaitNavigating for ready
+// WaitNavigating for html ready (stopped loading)
 func (s *Session) WaitNavigating(timeout time.Duration) error {
+	if atomic.LoadInt32(&s.Navigating) == 0 {
+		return nil
+	}
 	success := make(chan struct{}, 1)
 	go func() {
-		for atomic.LoadInt32(&s.Navigating) == 1 {
+		for atomic.LoadInt32(&s.Navigating) != 0 {
 			time.Sleep(100 * time.Millisecond)
 		}
 		success <- struct{}{}
@@ -351,6 +375,26 @@ func (s *Session) WaitNavigating(timeout time.Duration) error {
 		return nil
 	case <-time.After(timeout):
 		return errors.New("WaitNavigating Timeout")
+	}
+}
+
+// WaitJSExecCTX for javascript execution context ready
+func (s *Session) WaitJSExecCTX(timeout time.Duration) error {
+	if atomic.LoadInt32(&s.IsJSCxtReady) != 0 {
+		return nil
+	}
+	success := make(chan struct{}, 1)
+	go func() {
+		for atomic.LoadInt32(&s.IsJSCxtReady) == 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		success <- struct{}{}
+	}()
+	select {
+	case <-success:
+		return nil
+	case <-time.After(timeout):
+		return errors.New("WaitJSExecCTX Timeout")
 	}
 }
 

@@ -4,8 +4,14 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
+<<<<<<< HEAD
+	"github.com/tidwall/gjson"
+	"github.com/vinhjaxt/devtools"
+=======
 	"github.com/tidwall/sjson"
+>>>>>>> 0fed03321c718e5d1d1acb4ac1e21c35846fe375
 )
 
 func TestDemo(t *testing.T) {
@@ -28,7 +34,18 @@ func TestDemo(t *testing.T) {
 
 	ss.WaitNavigate("http://google.com")
 	// You can execJS or wait for some front-end here
+	ss.WaitJSExecCTX(5 * time.Second)
 	ss.ExecJs(`1`)
 	log.Println("Done")
 	os.Exit(0)
+}
+
+func autoCloseTab(s *devtools.Session, dv *devtools.DevtoolsConn) {
+	eID := s.AddEvent(func(body *gjson.Result, err error) {
+		if targetID := body.Get("params.targetInfo.targetId").String(); body.Get("method").String() == "Target.targetCreated" && body.Get("params.targetInfo.openerId").String() == s.TargetID && targetID != "" {
+			// new tab created by this target
+			dv.CloseTab(targetID)
+		}
+	})
+	defer s.DelEvent(eID)
 }
