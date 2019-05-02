@@ -226,27 +226,36 @@ func (dv *DevtoolsConn) newTab(link string) (*gjson.Result, error) {
 	return &tabs, nil
 }
 
-// NewSession create new private tab (separate context)
-func (dv *DevtoolsConn) NewSession(link string) (*Session, error) {
+// NewContext create new private tab (separate context)
+func (dv *DevtoolsConn) NewContext(link string) (string, error) {
 	json, err := dv.SendCommand(`{"method":"Target.createBrowserContext"}`)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	bcID := json.Get("result.browserContextId")
 	if bcID.Exists() == false {
-		return nil, errors.New("Can not create browser context")
+		return "", errors.New("Can not create browser context")
 	}
 
 	body, err := sjson.Set(`{"method":"Target.createTarget","params":{"url":"","browserContextId":"`+bcID.String()+`"}}`, "params.url", link)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	json, err = dv.SendCommand(body)
 	targetID := json.Get("result.targetId")
 	if !targetID.Exists() {
-		return nil, errors.New("Can not create targetId by browser context")
+		return "", errors.New("Can not create targetId by browser context")
 	}
-	return dv.OpenSession(targetID.String())
+	return targetID.String(), nil
+}
+
+// NewSession create new private tab (separate context) then attach to tab
+func (dv *DevtoolsConn) NewSession(link string) (*Session, error) {
+	targetID, err := dv.NewContext(link)
+	if err != nil {
+		return nil, err
+	}
+	return dv.OpenSession(targetID)
 }
 
 // CloseTab by id

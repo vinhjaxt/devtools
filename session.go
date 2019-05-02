@@ -32,7 +32,7 @@ type Session struct {
 	feCount      uint32
 	Meta         *SessionMeta
 	OnNavigate   func(url string)
-	Loading      *sync.WaitGroup
+	Loading      int32
 	Navigating   int32
 	IsJSCxtReady int32
 	ExecCxtID    int32
@@ -64,7 +64,7 @@ func (dv *DevtoolsConn) OpenSession(targetID string) (*Session, error) {
 		feMu:       &sync.RWMutex{},
 		feCount:    0,
 		Meta:       &SessionMeta{},
-		Loading:    &sync.WaitGroup{},
+		Loading:    0,
 		Navigating: 0,
 	}
 
@@ -148,12 +148,12 @@ func (s *Session) processEvent(json *gjson.Result) {
 			// body.Get("params.targetInfo.openerId").String() == s.TargetID => open by this tab
 		case "Page.frameStartedLoading":
 			if json.Get("params.frameId").String() == s.TargetID {
-				s.Loading.Add(1)
+				atomic.StoreInt32(&s.Loading, 1)
 				atomic.StoreInt32(&s.Navigating, 1)
 			}
 		case "Page.frameStoppedLoading":
 			if json.Get("params.frameId").String() == s.TargetID {
-				s.Loading.Add(-1)
+				atomic.StoreInt32(&s.Loading, 0)
 				atomic.StoreInt32(&s.Navigating, 0)
 			}
 		case "Target.targetInfoChanged":
@@ -343,11 +343,16 @@ func (s *Session) SendCommand(json string) (*gjson.Result, error) {
 	}
 }
 
-// WaitLoading for complete
+// WaitLoading for complete (complete load html, but not sure for ready)
 func (s *Session) WaitLoading(timeout time.Duration) error {
+	if atomic.LoadInt32(&s.Loading) == 0 {
+		return nil
+	}
 	success := make(chan struct{}, 1)
 	go func() {
-		s.Loading.Wait()
+		for atomic.LoadInt32(&s.Loading) != 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
 		success <- struct{}{}
 	}()
 	select {

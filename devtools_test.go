@@ -1,4 +1,4 @@
-package devtools
+package devtools_test
 
 import (
 	"log"
@@ -6,12 +6,9 @@ import (
 	"testing"
 	"time"
 
-<<<<<<< HEAD
 	"github.com/tidwall/gjson"
-	"github.com/vinhjaxt/devtools"
-=======
 	"github.com/tidwall/sjson"
->>>>>>> 0fed03321c718e5d1d1acb4ac1e21c35846fe375
+	"github.com/vinhjaxt/devtools"
 )
 
 func TestDemo(t *testing.T) {
