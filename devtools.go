@@ -242,6 +242,9 @@ func (dv *DevtoolsConn) NewContext(link string) (string, error) {
 		return "", err
 	}
 	json, err = dv.SendCommand(body)
+	if err != nil {
+		return "", err
+	}
 	targetID := json.Get("result.targetId")
 	if !targetID.Exists() {
 		return "", errors.New("Can not create targetId by browser context")
