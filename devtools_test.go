@@ -12,7 +12,7 @@ import (
 )
 
 func TestDemo(t *testing.T) {
-	dv, err := NewDevtools("http://localhost:9222")
+	dv, err := devtools.NewDevtools("http://localhost:9222")
 	if err != nil {
 		log.Panicln(err)
 	}
@@ -37,7 +37,7 @@ func TestDemo(t *testing.T) {
 	os.Exit(0)
 }
 
-func autoCloseTab(s *devtools.Session, dv *devtools.DevtoolsConn) {
+func autoCloseTab(s *devtools.Session, dv *devtools.DevTools) {
 	eID := s.AddEvent(func(body *gjson.Result, err error) {
 		if targetID := body.Get("params.targetInfo.targetId").String(); body.Get("method").String() == "Target.targetCreated" && body.Get("params.targetInfo.openerId").String() == s.TargetID && targetID != "" {
 			// new tab created by this target
