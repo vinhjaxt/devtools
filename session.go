@@ -16,13 +16,13 @@ import (
 
 // SessionMeta contains URL of tab
 type SessionMeta struct {
-	Url string
+	URL string
 }
 
 // Session hold tab connection
 type Session struct {
 	nextSendID   uint64
-	Dv           *DevtoolsConn
+	Dv           *DevTools
 	TargetID     string
 	Conn         *websocket.Conn
 	ConnMu       *sync.Mutex
@@ -39,8 +39,8 @@ type Session struct {
 }
 
 // OpenSession open session by targetId (tabId)
-func (dv *DevtoolsConn) OpenSession(targetID string) (*Session, error) {
-	wsURL, err := url.Parse(dv.Url)
+func (dv *DevTools) OpenSession(targetID string) (*Session, error) {
+	wsURL, err := url.Parse(dv.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -159,10 +159,10 @@ func (s *Session) processEvent(json *gjson.Result) {
 		case "Target.targetInfoChanged":
 			if json.Get("params.targetInfo.targetId").String() == s.TargetID {
 				url := json.Get("params.targetInfo.url").String()
-				if url != s.Meta.Url {
-					s.Meta.Url = url
+				if url != s.Meta.URL {
+					s.Meta.URL = url
 					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.Url)
+						s.OnNavigate(s.Meta.URL)
 					}
 				}
 			}
@@ -170,10 +170,10 @@ func (s *Session) processEvent(json *gjson.Result) {
 		case "Page.navigatedWithinDocument":
 			if json.Get("params.frameId").String() == s.TargetID {
 				url := json.Get("params.url").String()
-				if url != s.Meta.Url {
-					s.Meta.Url = url
+				if url != s.Meta.URL {
+					s.Meta.URL = url
 					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.Url)
+						s.OnNavigate(s.Meta.URL)
 					}
 				}
 			}
@@ -181,10 +181,10 @@ func (s *Session) processEvent(json *gjson.Result) {
 			if json.Get("params.frameId").String() == s.TargetID {
 				atomic.StoreInt32(&s.Navigating, 1)
 				url := json.Get("params.url").String()
-				if url != s.Meta.Url {
-					s.Meta.Url = url
+				if url != s.Meta.URL {
+					s.Meta.URL = url
 					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.Url)
+						s.OnNavigate(s.Meta.URL)
 					}
 				}
 			}
@@ -192,10 +192,10 @@ func (s *Session) processEvent(json *gjson.Result) {
 			if json.Get("params.frame.id").String() == s.TargetID {
 				atomic.StoreInt32(&s.Navigating, 0)
 				url := json.Get("params.frame.url").String()
-				if url != s.Meta.Url {
-					s.Meta.Url = url
+				if url != s.Meta.URL {
+					s.Meta.URL = url
 					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.Url)
+						s.OnNavigate(s.Meta.URL)
 					}
 				}
 			}

@@ -18,13 +18,14 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// DevtoolsConn hold browser connection
-type DevtoolsConn struct {
-	nextSendID uint64
+// DevTools hold browser connection
+type DevTools struct {
 	Conn       *websocket.Conn
 	ConnMu     *sync.Mutex
 	IsClosed   atomic.Value
-	Url        string
+	URL        string
+	Debug      int32
+	nextSendID uint64
 	fEvents    map[uint32]func(*gjson.Result, error)
 	feMu       *sync.RWMutex
 	feCount    uint32
@@ -43,7 +44,7 @@ var fasthttpClient = &fasthttp.Client{
 }
 
 // NewDevtools by url. Eg: http://localhost:9222
-func NewDevtools(url string) (*DevtoolsConn, error) {
+func NewDevtools(url string) (*DevTools, error) {
 	req := fasthttp.AcquireRequest()
 	req.SetRequestURI(url + "/json/version")
 	req.Header.SetUserAgent("fasthttp/1.0.0")
@@ -68,12 +69,13 @@ func NewDevtools(url string) (*DevtoolsConn, error) {
 
 	var isClosed atomic.Value
 	isClosed.Store(false)
-	dv := &DevtoolsConn{
-		nextSendID: 0,
-		Url:        url,
+	dv := &DevTools{
+		URL:        url,
 		Conn:       c,
 		ConnMu:     &sync.Mutex{},
 		IsClosed:   isClosed,
+		Debug:      0,
+		nextSendID: 0,
 		fEvents:    map[uint32]func(*gjson.Result, error){},
 		feMu:       &sync.RWMutex{},
 		feCount:    0,
@@ -92,6 +94,9 @@ func NewDevtools(url string) (*DevtoolsConn, error) {
 				c.Close()
 				break
 			}
+			if atomic.LoadInt32(&dv.Debug) == 1 {
+				log.Println("<<<", string(body))
+			}
 			json := gjson.ParseBytes(body)
 			go dv.broadcastDevtools(&json, err)
 		}
@@ -101,7 +106,7 @@ func NewDevtools(url string) (*DevtoolsConn, error) {
 }
 
 // Close close connection to browser
-func (dv *DevtoolsConn) Close() error {
+func (dv *DevTools) Close() error {
 	dv.IsClosed.Store(true)
 	err := dv.Conn.Close()
 	dv.fEvents = nil
@@ -110,7 +115,7 @@ func (dv *DevtoolsConn) Close() error {
 	return err
 }
 
-func (dv *DevtoolsConn) broadcastDevtools(body *gjson.Result, err error) {
+func (dv *DevTools) broadcastDevtools(body *gjson.Result, err error) {
 	dv.feMu.RLock()
 	for _, fn := range dv.fEvents {
 		go fn(body, err)
@@ -119,7 +124,7 @@ func (dv *DevtoolsConn) broadcastDevtools(body *gjson.Result, err error) {
 }
 
 // AddEvent add func listen to ws event
-func (dv *DevtoolsConn) AddEvent(fn func(body *gjson.Result, err error)) uint32 {
+func (dv *DevTools) AddEvent(fn func(body *gjson.Result, err error)) uint32 {
 	feID := atomic.AddUint32(&dv.feCount, 1)
 	dv.feMu.Lock()
 	dv.fEvents[feID] = fn
@@ -128,7 +133,7 @@ func (dv *DevtoolsConn) AddEvent(fn func(body *gjson.Result, err error)) uint32 
 }
 
 // DelEvent delete func listen to ws event
-func (dv *DevtoolsConn) DelEvent(fID uint32) {
+func (dv *DevTools) DelEvent(fID uint32) {
 	dv.feMu.Lock()
 	for k := range dv.fEvents {
 		if k == fID {
@@ -139,7 +144,7 @@ func (dv *DevtoolsConn) DelEvent(fID uint32) {
 }
 
 // SendCommand and wait for response
-func (dv *DevtoolsConn) SendCommand(json string) (*gjson.Result, error) {
+func (dv *DevTools) SendCommand(json string) (*gjson.Result, error) {
 	if dv.IsClosed.Load().(bool) {
 		return nil, errors.New("Websocket is closed")
 	}
@@ -174,7 +179,7 @@ func (dv *DevtoolsConn) SendCommand(json string) (*gjson.Result, error) {
 }
 
 // WriteCommand dont wait for response
-func (dv *DevtoolsConn) WriteCommand(json string) error {
+func (dv *DevTools) WriteCommand(json string) error {
 	if dv.IsClosed.Load().(bool) {
 		return errors.New("Websocket is closed")
 	}
@@ -195,12 +200,12 @@ func (dv *DevtoolsConn) WriteCommand(json string) error {
 }
 
 // OpenTab equal OpenSession: Open existed target by id
-func (dv *DevtoolsConn) OpenTab(tabID string) (*Session, error) {
+func (dv *DevTools) OpenTab(tabID string) (*Session, error) {
 	return dv.OpenSession(tabID)
 }
 
 // NewTab create new tab and open it
-func (dv *DevtoolsConn) NewTab(url string) (*Session, error) {
+func (dv *DevTools) NewTab(url string) (*Session, error) {
 	tab, err := dv.newTab(url)
 	if err != nil {
 		return nil, err
@@ -212,10 +217,10 @@ func (dv *DevtoolsConn) NewTab(url string) (*Session, error) {
 	return nil, errors.New("Can not create new tab")
 }
 
-func (dv *DevtoolsConn) newTab(link string) (*gjson.Result, error) {
+func (dv *DevTools) newTab(link string) (*gjson.Result, error) {
 	// http://localhost:9222/json/new?chrome://newtab
 	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(dv.Url + "/json/new?" + url.QueryEscape(link))
+	req.SetRequestURI(dv.URL + "/json/new?" + url.QueryEscape(link))
 	resp := fasthttp.AcquireResponse()
 	err := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
 	fasthttp.ReleaseRequest(req)
@@ -229,7 +234,7 @@ func (dv *DevtoolsConn) newTab(link string) (*gjson.Result, error) {
 }
 
 // NewContext create new private tab (separate context)
-func (dv *DevtoolsConn) NewContext(link string) (string, error) {
+func (dv *DevTools) NewContext(link string) (string, error) {
 	json, err := dv.SendCommand(`{"method":"Target.createBrowserContext"}`)
 	if err != nil {
 		return "", err
@@ -255,7 +260,7 @@ func (dv *DevtoolsConn) NewContext(link string) (string, error) {
 }
 
 // NewSession create new private tab (separate context) then attach to tab
-func (dv *DevtoolsConn) NewSession(link string) (*Session, error) {
+func (dv *DevTools) NewSession(link string) (*Session, error) {
 	targetID, err := dv.NewContext(link)
 	if err != nil {
 		return nil, err
@@ -264,9 +269,9 @@ func (dv *DevtoolsConn) NewSession(link string) (*Session, error) {
 }
 
 // CloseTab by id
-func (dv *DevtoolsConn) CloseTab(tabID string) error {
+func (dv *DevTools) CloseTab(tabID string) error {
 	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(dv.Url + "/json/close/" + url.PathEscape(tabID))
+	req.SetRequestURI(dv.URL + "/json/close/" + url.PathEscape(tabID))
 	resp := fasthttp.AcquireResponse()
 	err := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
 	fasthttp.ReleaseRequest(req)
@@ -283,10 +288,10 @@ func (dv *DevtoolsConn) CloseTab(tabID string) error {
 }
 
 // GetAllTabs of browser
-func (dv *DevtoolsConn) GetAllTabs() (*gjson.Result, error) {
+func (dv *DevTools) GetAllTabs() (*gjson.Result, error) {
 	// http://localhost:9222/json
 	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(dv.Url + "/json")
+	req.SetRequestURI(dv.URL + "/json")
 	resp := fasthttp.AcquireResponse()
 	err := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
 	fasthttp.ReleaseRequest(req)
@@ -304,7 +309,7 @@ func (dv *DevtoolsConn) GetAllTabs() (*gjson.Result, error) {
 }
 
 // CloseAllTabs of browser
-func (dv *DevtoolsConn) CloseAllTabs() []error {
+func (dv *DevTools) CloseAllTabs() []error {
 	// close all tab
 	tabs, err := dv.GetAllTabs()
 	if err != nil {
@@ -328,7 +333,7 @@ func (dv *DevtoolsConn) CloseAllTabs() []error {
 }
 
 // GetExtensionSession open session of background page
-func (dv *DevtoolsConn) GetExtensionSession(extID string) (*Session, error) {
+func (dv *DevTools) GetExtensionSession(extID string) (*Session, error) {
 	tabs, err := dv.GetAllTabs()
 	if err != nil {
 		return nil, err
@@ -351,4 +356,23 @@ func (dv *DevtoolsConn) GetExtensionSession(extID string) (*Session, error) {
 		}
 	}
 	return nil, errors.New("No extension background found")
+}
+
+// GetAnySession return one session tab
+func (dv *DevTools) GetAnySession() (*Session, error) {
+	tabs, err := dv.GetAllTabs()
+	if err != nil {
+		return nil, err
+	}
+	for _, tab := range tabs.Array() {
+		if tab.Get("type").String() == "background_page" {
+			continue
+		}
+		ss, err := dv.OpenTab(tab.Get("id").String())
+		if err != nil {
+			return nil, err
+		}
+		return ss, nil
+	}
+	return nil, errors.New("No tab found")
 }
