@@ -118,7 +118,8 @@ func (dv *DevtoolsConn) broadcastDevtools(body *gjson.Result, err error) {
 	dv.feMu.RUnlock()
 }
 
-func (dv *DevtoolsConn) addEvent(fn func(body *gjson.Result, err error)) uint32 {
+// AddEvent add func listen to ws event
+func (dv *DevtoolsConn) AddEvent(fn func(body *gjson.Result, err error)) uint32 {
 	feID := atomic.AddUint32(&dv.feCount, 1)
 	dv.feMu.Lock()
 	dv.fEvents[feID] = fn
@@ -126,7 +127,8 @@ func (dv *DevtoolsConn) addEvent(fn func(body *gjson.Result, err error)) uint32 
 	return feID
 }
 
-func (dv *DevtoolsConn) delEvent(fID uint32) {
+// DelEvent delete func listen to ws event
+func (dv *DevtoolsConn) DelEvent(fID uint32) {
 	dv.feMu.Lock()
 	for k := range dv.fEvents {
 		if k == fID {
@@ -157,7 +159,7 @@ func (dv *DevtoolsConn) SendCommand(json string) (*gjson.Result, error) {
 	}
 
 	success := make(chan *gjson.Result, 1) // It's OK to leave this chan open. GC'll collect it
-	defer dv.delEvent(dv.addEvent(func(body *gjson.Result, err error) {
+	defer dv.DelEvent(dv.AddEvent(func(body *gjson.Result, err error) {
 		if body.Get("id").Uint() == sentID {
 			success <- body
 		}

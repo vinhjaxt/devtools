@@ -349,9 +349,13 @@ func (s *Session) WaitLoading(timeout time.Duration) error {
 		return nil
 	}
 	success := make(chan struct{}, 1)
+	var isTimeout int32
 	go func() {
 		for atomic.LoadInt32(&s.Loading) != 0 {
 			time.Sleep(100 * time.Millisecond)
+			if atomic.LoadInt32(&isTimeout) != 0 {
+				return
+			}
 		}
 		success <- struct{}{}
 	}()
@@ -359,6 +363,7 @@ func (s *Session) WaitLoading(timeout time.Duration) error {
 	case <-success:
 		return nil
 	case <-time.After(timeout):
+		atomic.StoreInt32(&isTimeout, 1)
 		return errors.New("WaitLoading Timeout")
 	}
 }
@@ -369,9 +374,13 @@ func (s *Session) WaitNavigating(timeout time.Duration) error {
 		return nil
 	}
 	success := make(chan struct{}, 1)
+	var isTimeout int32
 	go func() {
 		for atomic.LoadInt32(&s.Navigating) != 0 {
 			time.Sleep(100 * time.Millisecond)
+			if atomic.LoadInt32(&isTimeout) != 0 {
+				return
+			}
 		}
 		success <- struct{}{}
 	}()
@@ -379,6 +388,7 @@ func (s *Session) WaitNavigating(timeout time.Duration) error {
 	case <-success:
 		return nil
 	case <-time.After(timeout):
+		atomic.StoreInt32(&isTimeout, 1)
 		return errors.New("WaitNavigating Timeout")
 	}
 }
@@ -389,9 +399,13 @@ func (s *Session) WaitJSExecCTX(timeout time.Duration) error {
 		return nil
 	}
 	success := make(chan struct{}, 1)
+	var isTimeout int32
 	go func() {
 		for atomic.LoadInt32(&s.IsJSCxtReady) == 0 {
 			time.Sleep(100 * time.Millisecond)
+			if atomic.LoadInt32(&isTimeout) != 0 {
+				return
+			}
 		}
 		success <- struct{}{}
 	}()
@@ -399,6 +413,7 @@ func (s *Session) WaitJSExecCTX(timeout time.Duration) error {
 	case <-success:
 		return nil
 	case <-time.After(timeout):
+		atomic.StoreInt32(&isTimeout, 1)
 		return errors.New("WaitJSExecCTX Timeout")
 	}
 }
