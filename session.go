@@ -3,9 +3,12 @@ package devtools
 import (
 	"errors"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	mapset "github.com/deckarep/golang-set"
 
 	"github.com/chromedp/chromedp/kb"
 	"github.com/tidwall/gjson"
@@ -21,21 +24,20 @@ type SessionMeta struct {
 
 // Session hold tab connection
 type Session struct {
-	nextSendID   uint64
-	Dv           *DevTools
-	TargetID     string
-	Conn         *websocket.Conn
-	ConnMu       *sync.Mutex
-	IsClosed     *atomic.Value
-	fEvents      map[uint32]func(*gjson.Result, error)
-	feMu         *sync.RWMutex
-	feCount      uint32
-	Meta         *SessionMeta
-	OnNavigate   func(url string)
-	Loading      int32
-	Navigating   int32
-	IsJSCxtReady int32
-	ExecCxtID    int32
+	nextSendID      uint64
+	Dv              *DevTools
+	TargetID        string
+	Conn            *websocket.Conn
+	ConnMu          *sync.Mutex
+	IsClosed        int32
+	fEvents         map[uint32]func(*gjson.Result, error)
+	feMu            *sync.RWMutex
+	feCount         uint32
+	Meta            *SessionMeta
+	OnNavigate      func(url string)
+	IsJSCxtReady    int32
+	ExecCxtID       int32
+	lifecycleEvents mapset.Set
 }
 
 // OpenSession open session by targetId (tabId)
@@ -51,24 +53,23 @@ func (dv *DevTools) OpenSession(targetID string) (*Session, error) {
 		return nil, err
 	}
 
-	var isClosed atomic.Value
-	isClosed.Store(false)
 	s := &Session{
-		nextSendID: 0,
-		Dv:         dv,
-		TargetID:   targetID,
-		IsClosed:   &isClosed,
-		Conn:       c,
-		ConnMu:     &sync.Mutex{},
-		fEvents:    map[uint32]func(*gjson.Result, error){},
-		feMu:       &sync.RWMutex{},
-		feCount:    0,
-		Meta:       &SessionMeta{},
-		Loading:    0,
-		Navigating: 0,
+		nextSendID:      0,
+		Dv:              dv,
+		TargetID:        targetID,
+		IsClosed:        0,
+		Conn:            c,
+		ConnMu:          &sync.Mutex{},
+		fEvents:         map[uint32]func(*gjson.Result, error){},
+		feMu:            &sync.RWMutex{},
+		feCount:         0,
+		Meta:            &SessionMeta{},
+		lifecycleEvents: mapset.NewSet(),
 	}
 
-	for _, initCmd := range []string{`{"method":"Page.enable"}`, `{"method":"Network.enable"}`, `{"method":"Target.enable"}`, `{"method":"Runtime.enable"}`, `{method":"Target.setAutoAttach","params":{"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true}}`, `{"method":"Target.setDiscoverTargets","params":{"discover":true}}`} {
+	time.Sleep(100 * time.Millisecond)
+	for _, initCmd := range []string{`{"method":"Page.enable"}`, `{"method":"Network.enable"}`, `{"method":"Target.enable"}`, `{"method":"Runtime.enable"}`, `{method":"Target.setAutoAttach","params":{"autoAttach":true,"waitForDebuggerOnStart":false,"flatten":true}}`, `{"method":"Target.setDiscoverTargets","params":{"discover":true}}`, `{"method":"Page.setLifecycleEventsEnabled","params":{"enabled":true}}`} {
+		time.Sleep(10 * time.Millisecond)
 		err = s.WriteCommand(initCmd)
 		if err != nil {
 			return nil, err
@@ -79,13 +80,13 @@ func (dv *DevTools) OpenSession(targetID string) (*Session, error) {
 		for {
 			_, body, err := c.ReadMessage()
 			if err != nil {
-				isClosed.Store(true)
+				atomic.StoreInt32(&s.IsClosed, 1)
 				c.Close()
 				break
 			}
 			json := gjson.ParseBytes(body)
-			go s.broadcastTarget(&json, err)
 			go s.processEvent(&json)
+			go s.broadcastTarget(&json, err)
 		}
 	}()
 
@@ -94,10 +95,10 @@ func (dv *DevTools) OpenSession(targetID string) (*Session, error) {
 
 func (s *Session) broadcastTarget(body *gjson.Result, err error) {
 	s.feMu.RLock()
+	defer s.feMu.RUnlock()
 	for _, fn := range s.fEvents {
-		go fn(body, err)
+		fn(body, err)
 	}
-	s.feMu.RUnlock()
 }
 
 // AddEvent listen for ws response
@@ -119,88 +120,6 @@ func (s *Session) DelEvent(fID uint32) {
 		}
 	}
 	s.feMu.Unlock()
-}
-
-// Target.targetInfoChanged: {"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"39047F6BC601065749331FCE34A1D2CE","type":"page","title":"v88.be","url":"http://v88.be/","attached":true,"browserContextId":"9FA87D43187C093D7516D211A52BE4A5"}}}
-func (s *Session) processEvent(json *gjson.Result) {
-	method := json.Get("method").String()
-	// log.Println(json.Raw)
-	if method != "" {
-		switch method {
-		case "Runtime.executionContextCreated":
-			if json.Get("params.context.auxData.frameId").String() == s.TargetID && json.Get("params.context.auxData.isDefault").Bool() {
-				// isDefault false => extension context
-				// log.Println("JS Ctx created")
-				atomic.StoreInt32(&s.IsJSCxtReady, 1)
-				atomic.StoreInt32(&s.ExecCxtID, int32(json.Get("params.context.id").Int()))
-			}
-		case "Runtime.executionContextsCleared":
-			// log.Println("JS Ctx Cleared")
-			atomic.StoreInt32(&s.IsJSCxtReady, 0)
-		case "Runtime.executionContextDestroyed":
-			if int32(json.Get("params.executionContextId").Int()) == atomic.LoadInt32(&s.ExecCxtID) {
-				// log.Println("JS Ctx Destroyed")
-				atomic.StoreInt32(&s.IsJSCxtReady, 0)
-			}
-			// frameId
-		case "Target.targetCreated":
-			// new tab opened
-			// body.Get("params.targetInfo.openerId").String() == s.TargetID => open by this tab
-		case "Page.frameStartedLoading":
-			if json.Get("params.frameId").String() == s.TargetID {
-				atomic.StoreInt32(&s.Loading, 1)
-				atomic.StoreInt32(&s.Navigating, 1)
-			}
-		case "Page.frameStoppedLoading":
-			if json.Get("params.frameId").String() == s.TargetID {
-				atomic.StoreInt32(&s.Loading, 0)
-				atomic.StoreInt32(&s.Navigating, 0)
-			}
-		case "Target.targetInfoChanged":
-			if json.Get("params.targetInfo.targetId").String() == s.TargetID {
-				url := json.Get("params.targetInfo.url").String()
-				if url != s.Meta.URL {
-					s.Meta.URL = url
-					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.URL)
-					}
-				}
-			}
-		case "Page.loadEventFired", "Page.domContentEventFired":
-		case "Page.navigatedWithinDocument":
-			if json.Get("params.frameId").String() == s.TargetID {
-				url := json.Get("params.url").String()
-				if url != s.Meta.URL {
-					s.Meta.URL = url
-					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.URL)
-					}
-				}
-			}
-		case "Page.frameScheduledNavigation":
-			if json.Get("params.frameId").String() == s.TargetID {
-				atomic.StoreInt32(&s.Navigating, 1)
-				url := json.Get("params.url").String()
-				if url != s.Meta.URL {
-					s.Meta.URL = url
-					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.URL)
-					}
-				}
-			}
-		case "Page.frameNavigated":
-			if json.Get("params.frame.id").String() == s.TargetID {
-				atomic.StoreInt32(&s.Navigating, 0)
-				url := json.Get("params.frame.url").String()
-				if url != s.Meta.URL {
-					s.Meta.URL = url
-					if s.OnNavigate != nil {
-						s.OnNavigate(s.Meta.URL)
-					}
-				}
-			}
-		}
-	}
 }
 
 // WaitCommand by a function with timeout
@@ -283,7 +202,7 @@ func (s *Session) WaitNavigateComplete(link string) error {
 
 // Close session
 func (s *Session) Close(closeTab bool) error {
-	s.IsClosed.Store(true)
+	atomic.StoreInt32(&s.IsClosed, 1)
 	err := s.Conn.Close()
 	if closeTab {
 		err2 := s.Dv.CloseTab(s.TargetID)
@@ -301,7 +220,7 @@ func (s *Session) Close(closeTab bool) error {
 
 // SendCommand and wait for response
 func (s *Session) SendCommand(json string) (*gjson.Result, error) {
-	if s.IsClosed.Load().(bool) {
+	if atomic.LoadInt32(&s.IsClosed) == 1 {
 		return nil, errors.New("Tab closed")
 	}
 
@@ -327,7 +246,7 @@ func (s *Session) SendCommand(json string) (*gjson.Result, error) {
 		err = s.Conn.WriteMessage(websocket.TextMessage, []byte(json))
 		s.ConnMu.Unlock()
 		if err != nil {
-			s.IsClosed.Store(true)
+			atomic.StoreInt32(&s.IsClosed, 1)
 			s.Conn.Close()
 			errSig <- err
 		}
@@ -345,13 +264,13 @@ func (s *Session) SendCommand(json string) (*gjson.Result, error) {
 
 // WaitLoading for complete (complete load html, but not sure for ready)
 func (s *Session) WaitLoading(timeout time.Duration) error {
-	if atomic.LoadInt32(&s.Loading) == 0 {
+	if s.lifecycleEvents.Contains("DOMContentLoaded") {
 		return nil
 	}
 	success := make(chan struct{}, 1)
 	var isTimeout int32
 	go func() {
-		for atomic.LoadInt32(&s.Loading) != 0 {
+		for s.lifecycleEvents.Contains("DOMContentLoaded") == false {
 			time.Sleep(100 * time.Millisecond)
 			if atomic.LoadInt32(&isTimeout) != 0 {
 				return
@@ -368,15 +287,29 @@ func (s *Session) WaitLoading(timeout time.Duration) error {
 	}
 }
 
+// WaitReady for html ready (stopped loading)
+func (s *Session) WaitReady(timeout time.Duration) error {
+	return s.WaitNavigating(timeout)
+}
+
 // WaitNavigating for html ready (stopped loading)
+/*
+lifecycleEvents mean
+{
+  'load': 'load',
+  'domcontentloaded': 'DOMContentLoaded',
+  'networkidle0': 'networkIdle',
+  'networkidle2': 'networkAlmostIdle',
+}
+*/
 func (s *Session) WaitNavigating(timeout time.Duration) error {
-	if atomic.LoadInt32(&s.Navigating) == 0 {
+	if s.lifecycleEvents.Contains("networkIdle") {
 		return nil
 	}
 	success := make(chan struct{}, 1)
 	var isTimeout int32
 	go func() {
-		for atomic.LoadInt32(&s.Navigating) != 0 {
+		for s.lifecycleEvents.Contains("networkIdle") == false {
 			time.Sleep(100 * time.Millisecond)
 			if atomic.LoadInt32(&isTimeout) != 0 {
 				return
@@ -389,8 +322,17 @@ func (s *Session) WaitNavigating(timeout time.Duration) error {
 		return nil
 	case <-time.After(timeout):
 		atomic.StoreInt32(&isTimeout, 1)
+		// log.Println(atomic.LoadInt32(&s.Navigating))
 		return errors.New("WaitNavigating Timeout")
 	}
+}
+
+func (s *Session) WaitPageAvailable(timeout time.Duration) error {
+	err := s.WaitLoading(timeout)
+	if err != nil {
+		return err
+	}
+	return s.WaitJSExecCTX(timeout)
 }
 
 // WaitJSExecCTX for javascript execution context ready
@@ -420,7 +362,7 @@ func (s *Session) WaitJSExecCTX(timeout time.Duration) error {
 
 // WriteCommand and not wait for response
 func (s *Session) WriteCommand(json string) error {
-	if s.IsClosed.Load().(bool) {
+	if atomic.LoadInt32(&s.IsClosed) == 1 {
 		return errors.New("Tab closed")
 	}
 	sentID := atomic.AddUint64(&s.nextSendID, 1)
@@ -432,7 +374,7 @@ func (s *Session) WriteCommand(json string) error {
 	err = s.Conn.WriteMessage(websocket.TextMessage, []byte(json))
 	s.ConnMu.Unlock()
 	if err != nil {
-		s.IsClosed.Store(true)
+		atomic.StoreInt32(&s.IsClosed, 1)
 		s.Conn.Close()
 		return err
 	}
@@ -441,7 +383,7 @@ func (s *Session) WriteCommand(json string) error {
 
 // WriteCommandID return commandID and not wait for response
 func (s *Session) WriteCommandID(json string) (uint64, error) {
-	if s.IsClosed.Load().(bool) {
+	if atomic.LoadInt32(&s.IsClosed) == 1 {
 		return 0, errors.New("Tab closed")
 	}
 	sentID := atomic.AddUint64(&s.nextSendID, 1)
@@ -453,7 +395,7 @@ func (s *Session) WriteCommandID(json string) (uint64, error) {
 	err = s.Conn.WriteMessage(websocket.TextMessage, []byte(json))
 	s.ConnMu.Unlock()
 	if err != nil {
-		s.IsClosed.Store(true)
+		atomic.StoreInt32(&s.IsClosed, 1)
 		s.Conn.Close()
 		return 0, err
 	}
@@ -488,8 +430,8 @@ func (s *Session) ClearBrowserCookies() error {
 	return s.WriteCommand(`{"method":"Network.clearBrowserCookies"}`)
 }
 
-// WaitReady wait for selector exist
-func (s *Session) WaitReady(sel string) error {
+// WaitSelReady wait for selector exist
+func (s *Session) WaitSelReady(sel string) error {
 	json, err := s.ExecJsPromise(`
 	(async () => {
 		return (await new Promise((resolve, reject) => {
@@ -583,7 +525,7 @@ func (s *Session) WaitShow(sel string) error {
 
 // SetAttribute set attribute of selector
 func (s *Session) SetAttribute(sel, key string, val interface{}) error {
-	json, err := s.ExecJs(`document.querySelector(` + jsonEncode(sel) + `).setAttribute(` + jsonEncode(key) + `, ` + jsonEncode(val) + `)`)
+	json, err := s.ExecJs(`if(true){const el = document.querySelector(` + jsonEncode(sel) + `);el[` + jsonEncode(key) + `]=` + jsonEncode(val) + `;el.setAttribute(` + jsonEncode(key) + `, ` + jsonEncode(val) + `)}`)
 	if err != nil {
 		return err
 	}
@@ -696,6 +638,7 @@ func (s *Session) WaitRequest(match func(req *gjson.Result) bool, init func() er
 		}
 	}))
 
+	time.Sleep(10 * time.Millisecond)
 	go func() {
 		if err := init(); err != nil {
 			errChan <- err
@@ -728,6 +671,7 @@ func (s *Session) JustSendKeys(chars string) error {
 			if err != nil {
 				return err
 			}
+			time.Sleep(15 * time.Millisecond)
 		}
 	}
 	return nil
@@ -743,6 +687,15 @@ func (s *Session) Click(sel string) error {
 		return errors.New("Can not Click: " + sel)
 	}
 	return nil
+}
+
+func (s *Session) RealClickPosition(x, y int) error {
+	err := s.WriteCommand(`{"method":"Input.dispatchMouseEvent","params":{"type":"mousePressed","x":` + strconv.Itoa(x) + `,"y":` + strconv.Itoa(y) + `,"button":"left","clickCount":1}}`)
+	if err != nil {
+		return err
+	}
+	time.Sleep(80 * time.Millisecond)
+	return s.WriteCommand(`{"method":"Input.dispatchMouseEvent","params":{"type":"mouseReleased","x":` + strconv.Itoa(x) + `,"y":` + strconv.Itoa(y) + `,"button":"left","clickCount":1}}`)
 }
 
 // Active the target

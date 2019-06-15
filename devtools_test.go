@@ -30,6 +30,11 @@ func TestDemo(t *testing.T) {
 	`)
 
 	ss.WaitNavigate("http://google.com")
+
+	time.Sleep(3 * time.Second)
+
+	ss.WaitNavigating(10 * time.Second)
+
 	// You can execJS or wait for some front-end here
 	ss.WaitJSExecCTX(5 * time.Second)
 	ss.ExecJs(`1`)

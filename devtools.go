@@ -22,7 +22,8 @@ import (
 type DevTools struct {
 	Conn       *websocket.Conn
 	ConnMu     *sync.Mutex
-	IsClosed   atomic.Value
+	IsClosed   int32
+	CloseFlag  int32
 	URL        string
 	Debug      int32
 	nextSendID uint64
@@ -45,35 +46,22 @@ var fasthttpClient = &fasthttp.Client{
 
 // NewDevtools by url. Eg: http://localhost:9222
 func NewDevtools(url string) (*DevTools, error) {
-	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(url + "/json/version")
-	req.Header.SetUserAgent("fasthttp/1.0.0")
-	req.Header.Set("Accept", "*/*")
-	resp := fasthttp.AcquireResponse()
-	err := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
-	fasthttp.ReleaseRequest(req)
-	if err != nil {
-		fasthttp.ReleaseResponse(resp)
-		return nil, err
-	}
-	wsURL := gjson.GetBytes(resp.Body(), "webSocketDebuggerUrl")
-	fasthttp.ReleaseResponse(resp)
-	if wsURL.Exists() == false {
-		return nil, errors.New("No websocket url exist")
-	}
-
-	c, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	wsURL, err := getWebsocketURL(url)
 	if err != nil {
 		return nil, err
 	}
 
-	var isClosed atomic.Value
-	isClosed.Store(false)
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	dv := &DevTools{
 		URL:        url,
 		Conn:       c,
 		ConnMu:     &sync.Mutex{},
-		IsClosed:   isClosed,
+		IsClosed:   0,
+		CloseFlag:  0,
 		Debug:      0,
 		nextSendID: 0,
 		fEvents:    map[uint32]func(*gjson.Result, error){},
@@ -88,26 +76,80 @@ func NewDevtools(url string) (*DevTools, error) {
 
 	go func() {
 		for {
-			_, body, err := c.ReadMessage()
+			for {
+				if atomic.LoadInt32(&dv.CloseFlag) == 1 {
+					return
+				}
+				mtype, body, err := c.ReadMessage()
+				if err != nil {
+					atomic.StoreInt32(&dv.IsClosed, 1)
+					c.Close()
+					break
+				}
+				if mtype != websocket.TextMessage {
+					continue
+				}
+				if atomic.LoadInt32(&dv.Debug) == 1 {
+					log.Println("<<<", string(body))
+				}
+				json := gjson.ParseBytes(body)
+				go dv.broadcastDevtools(&json, err)
+			}
+
+			if atomic.LoadInt32(&dv.CloseFlag) == 1 {
+				return
+			}
+			// reconnect
+			dv.ConnMu.Lock()
+
+			wsURL, err = getWebsocketURL(url)
 			if err != nil {
-				isClosed.Store(true)
-				c.Close()
-				break
+				// log.Println(err)
+				dv.ConnMu.Lock()
+				time.Sleep(3 * time.Second)
+				continue
 			}
-			if atomic.LoadInt32(&dv.Debug) == 1 {
-				log.Println("<<<", string(body))
+
+			c, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
+			if err != nil {
+				// log.Println(err)
+				dv.ConnMu.Lock()
+				time.Sleep(3 * time.Second)
+				continue
 			}
-			json := gjson.ParseBytes(body)
-			go dv.broadcastDevtools(&json, err)
+			log.Println("Devtools reconnected")
+			dv.Conn = c
+			atomic.StoreInt32(&dv.IsClosed, 0)
+			dv.ConnMu.Unlock()
 		}
 	}()
 
 	return dv, nil
 }
 
+func getWebsocketURL(url string) (string, error) {
+	req := fasthttp.AcquireRequest()
+	req.SetRequestURI(url + "/json/version")
+	req.Header.Set("Accept", "*/*")
+	resp := fasthttp.AcquireResponse()
+	err := fasthttpClient.DoTimeout(req, resp, 5*time.Second)
+	fasthttp.ReleaseRequest(req)
+	if err != nil {
+		fasthttp.ReleaseResponse(resp)
+		return "", err
+	}
+	wsURL := gjson.GetBytes(resp.Body(), "webSocketDebuggerUrl")
+	fasthttp.ReleaseResponse(resp)
+	if wsURL.Exists() == false {
+		return "", errors.New("No websocket url exist")
+	}
+	return wsURL.String(), nil
+}
+
 // Close close connection to browser
 func (dv *DevTools) Close() error {
-	dv.IsClosed.Store(true)
+	atomic.StoreInt32(&dv.IsClosed, 1)
+	atomic.StoreInt32(&dv.CloseFlag, 1)
 	err := dv.Conn.Close()
 	dv.fEvents = nil
 	dv.Conn = nil
@@ -117,10 +159,10 @@ func (dv *DevTools) Close() error {
 
 func (dv *DevTools) broadcastDevtools(body *gjson.Result, err error) {
 	dv.feMu.RLock()
-	for _, fn := range dv.fEvents {
-		go fn(body, err)
+	defer dv.feMu.RUnlock()
+	for _, fn := range dv.fEvents { // It's ok to range over nil map
+		fn(body, err)
 	}
-	dv.feMu.RUnlock()
 }
 
 // AddEvent add func listen to ws event
@@ -145,7 +187,7 @@ func (dv *DevTools) DelEvent(fID uint32) {
 
 // SendCommand and wait for response
 func (dv *DevTools) SendCommand(json string) (*gjson.Result, error) {
-	if dv.IsClosed.Load().(bool) {
+	if atomic.LoadInt32(&dv.IsClosed) == 1 {
 		return nil, errors.New("Websocket is closed")
 	}
 
@@ -158,7 +200,7 @@ func (dv *DevTools) SendCommand(json string) (*gjson.Result, error) {
 	err = dv.Conn.WriteMessage(websocket.TextMessage, []byte(json))
 	dv.ConnMu.Unlock()
 	if err != nil {
-		dv.IsClosed.Store(true)
+		atomic.StoreInt32(&dv.IsClosed, 1)
 		dv.Conn.Close()
 		return nil, err
 	}
@@ -180,7 +222,7 @@ func (dv *DevTools) SendCommand(json string) (*gjson.Result, error) {
 
 // WriteCommand dont wait for response
 func (dv *DevTools) WriteCommand(json string) error {
-	if dv.IsClosed.Load().(bool) {
+	if atomic.LoadInt32(&dv.IsClosed) == 1 {
 		return errors.New("Websocket is closed")
 	}
 	sentID := atomic.AddUint64(&dv.nextSendID, 1)
@@ -192,7 +234,7 @@ func (dv *DevTools) WriteCommand(json string) error {
 	err = dv.Conn.WriteMessage(websocket.TextMessage, []byte(json))
 	dv.ConnMu.Unlock()
 	if err != nil {
-		dv.IsClosed.Store(true)
+		atomic.StoreInt32(&dv.IsClosed, 1)
 		dv.Conn.Close()
 		return err
 	}
