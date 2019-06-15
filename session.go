@@ -182,7 +182,7 @@ func (s *Session) Navigate(link string) error {
 	}
 }
 
-// WaitNavigate to link dont wait complete
+// WaitNavigate to link and wait for html ready
 func (s *Session) WaitNavigate(link string) error {
 	err := s.Navigate(link)
 	if err != nil {
@@ -191,7 +191,7 @@ func (s *Session) WaitNavigate(link string) error {
 	return s.WaitNavigating(15 * time.Second)
 }
 
-// WaitNavigateComplete to a url
+// WaitNavigateComplete to a url (html not sure ready)
 func (s *Session) WaitNavigateComplete(link string) error {
 	err := s.Navigate(link)
 	if err != nil {
