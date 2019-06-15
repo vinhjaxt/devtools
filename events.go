@@ -1,7 +1,6 @@
 package devtools
 
 import (
-	"log"
 	"sync/atomic"
 
 	"github.com/tidwall/gjson"
@@ -23,7 +22,6 @@ func (s *Session) processEvent(json *gjson.Result) {
 					}
 					s.lifecycleEvents.Add(name)
 				}
-				log.Println(s.lifecycleEvents.String())
 				break
 			}
 		case "Runtime.executionContextCreated":
@@ -60,7 +58,6 @@ func (s *Session) processEvent(json *gjson.Result) {
 		case "Page.frameStoppedLoading":
 			{
 				if json.Get("params.frameId").String() == s.TargetID {
-					log.Println(s.lifecycleEvents.String())
 					s.lifecycleEvents.Add("DOMContentLoaded")
 					s.lifecycleEvents.Add("load")
 				}
